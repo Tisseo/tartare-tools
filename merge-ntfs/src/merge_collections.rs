@@ -22,6 +22,14 @@ use transit_model::{
 };
 use typed_index_collection::{CollectionWithId, Id, Idx};
 
+// Merge 2 collection of stop points together. Ignore duplicate identifiers.
+fn merge_ignore_duplicates<T>(collection: &mut CollectionWithId<T>, extend: CollectionWithId<T>)
+where
+    T: Id<T>,
+{
+    collection.merge(extend);
+}
+
 /// Merge the `Collections` parameter into the current `Collections` by consecutively merging
 /// each collections representing the model.  Fails in case of id collision.
 pub fn try_merge_collections(
@@ -40,6 +48,7 @@ pub fn try_merge_collections(
         mut physical_modes,
         mut stop_areas,
         mut stop_points,
+        stop_locations,
         calendars,
         companies,
         comments,
@@ -159,8 +168,9 @@ pub fn try_merge_collections(
     update_comment_idx(&mut stop_points, &c_idx_to_id, &collections.comments);
     update_comment_idx(&mut stop_areas, &c_idx_to_id, &collections.comments);
 
-    collections.stop_points.try_merge(stop_points)?;
-    collections.stop_areas.try_merge(stop_areas)?;
+    merge_ignore_duplicates(&mut collections.stop_points, stop_points);
+    merge_ignore_duplicates(&mut collections.stop_areas, stop_areas);
+    merge_ignore_duplicates(&mut collections.stop_locations, stop_locations);
 
     // Update stop point idx in new stop times
     let mut vjs = vehicle_journeys.take();
@@ -225,20 +235,51 @@ pub fn try_merge_collections(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use pretty_assertions::assert_eq;
+    use transit_model::objects::StopPoint;
+
+    #[test]
+    fn ignore_duplicates() {
+        let mut stop_points = CollectionWithId::new(vec![StopPoint {
+            id: "sp1".to_string(),
+            name: "Stop Point 1".to_string(),
+            ..Default::default()
+        }])
+        .unwrap();
+        let extend = CollectionWithId::new(vec![
+            StopPoint {
+                id: "sp1".to_string(),
+                name: "Extended Stop Point 1".to_string(),
+                ..Default::default()
+            },
+            StopPoint {
+                id: "sp2".to_string(),
+                name: "Extended Stop Point 2".to_string(),
+                ..Default::default()
+            },
+        ])
+        .unwrap();
+        merge_ignore_duplicates(&mut stop_points, extend);
+        assert_eq!(2, stop_points.len());
+        let stop_point = stop_points.get("sp1").unwrap();
+        assert_eq!("Stop Point 1", stop_point.name);
+        let stop_point = stop_points.get("sp2").unwrap();
+        assert_eq!("Extended Stop Point 2", stop_point.name);
+    }
 
     mod physical_mode {
         use super::*;
-        use transit_model::{model::BUS_PHYSICAL_MODE, objects::PhysicalMode};
+        use transit_model::objects::PhysicalMode;
 
         #[test]
         fn physical_mode_co2_emission_max() {
             let physical_mode1 = PhysicalMode {
-                id: String::from(BUS_PHYSICAL_MODE),
+                id: String::from("Bus"),
                 name: String::from("Bus"),
                 co2_emission: Some(21f32),
             };
             let physical_mode2 = PhysicalMode {
-                id: String::from(BUS_PHYSICAL_MODE),
+                id: String::from("Bus"),
                 name: String::from("Bus"),
                 co2_emission: Some(42f32),
             };
@@ -250,19 +291,19 @@ mod tests {
                 .push(physical_mode2)
                 .unwrap();
             let collections = try_merge_collections(collections, collections_to_merge).unwrap();
-            let bus_mode = collections.physical_modes.get(BUS_PHYSICAL_MODE).unwrap();
+            let bus_mode = collections.physical_modes.get("Bus").unwrap();
             assert_relative_eq!(42f32, bus_mode.co2_emission.unwrap());
         }
 
         #[test]
         fn physical_mode_co2_emission_one_missing() {
             let physical_mode1 = PhysicalMode {
-                id: String::from(BUS_PHYSICAL_MODE),
+                id: String::from("Bus"),
                 name: String::from("Bus"),
                 co2_emission: None,
             };
             let physical_mode2 = PhysicalMode {
-                id: String::from(BUS_PHYSICAL_MODE),
+                id: String::from("Bus"),
                 name: String::from("Bus"),
                 co2_emission: Some(42f32),
             };
@@ -274,7 +315,7 @@ mod tests {
                 .push(physical_mode2)
                 .unwrap();
             let collections = try_merge_collections(collections, collections_to_merge).unwrap();
-            let bus_mode = collections.physical_modes.get(BUS_PHYSICAL_MODE).unwrap();
+            let bus_mode = collections.physical_modes.get("Bus").unwrap();
             assert_relative_eq!(42f32, bus_mode.co2_emission.unwrap());
         }
     }
